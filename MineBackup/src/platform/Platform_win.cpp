@@ -876,7 +876,7 @@ bool ExtractFontToTempFile(wstring& extractedPath) {
 	wstring finalPath = GetDocumentsPath();
 
 	if (finalPath.back() != L'\\') finalPath += L'\\';
-	finalPath += L"fontawesome - sp.otf";
+	finalPath += L"fontawesome-sp.otf";
 
 	if (filesystem::exists(finalPath)) {
 		extractedPath = finalPath;
