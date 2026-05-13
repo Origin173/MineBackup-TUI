@@ -23,9 +23,9 @@ jobs:
     - name: Ensure embedded 7za.exe is available
       shell: pwsh
       run: |
-        $target7za = '.\MineBackup\7za.exe'
+        $target7za = '.\MineBackup\Assets\7za.exe'
         if (Test-Path $target7za) {
-          Write-Host 'Found existing MineBackup\7za.exe in repository workspace.'
+          Write-Host 'Found existing MineBackup\Assets\7za.exe in repository workspace.'
           exit 0
         }
 
@@ -70,10 +70,9 @@ jobs:
     - name: Collect unsigned executable
       shell: pwsh
       run: |
+        Start-Sleep -Seconds 3
         $candidates = @(
-          '.\x64\Release\MineBackup.exe',
-          '.\MineBackup\x64\Release\MineBackup.exe',
-          '.\Release\MineBackup.exe'
+          '.\x64\Release\MineBackup.exe'
         )
 
         $exePath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
