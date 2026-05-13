@@ -1,0 +1,198 @@
+name: Build & Sign MineBackup (Windows)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-sign:
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Ensure embedded 7za.exe is available
+      shell: pwsh
+      run: |
+        $target7za = '.\MineBackup\7za.exe'
+        if (Test-Path $target7za) {
+          Write-Host 'Found existing MineBackup\7za.exe in repository workspace.'
+          exit 0
+        }
+
+        New-Item -ItemType Directory -Path .\tools -Force | Out-Null
+        $installerPath = '.\tools\7zip-zstd-x64.exe'
+        $installDir = "$env:RUNNER_TEMP\7zipzstd"
+        $releaseUrl = 'https://github.com/mcmilk/7-Zip-zstd/releases/download/v25.01-v1.5.7-R4/7z25.01-zstd-x64.exe'
+        $expectedSha256 = '5a55a8b6abb09d4b5ddd64c95f22a5270cb46752fb7a5353073508922b141596'
+
+        Write-Host "Downloading $releaseUrl"
+        Invoke-WebRequest -Uri $releaseUrl -OutFile $installerPath
+
+        $actualSha256 = (Get-FileHash -Path $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualSha256 -ne $expectedSha256) {
+          throw "7-Zip-zstd installer hash mismatch. Expected $expectedSha256, got $actualSha256"
+        }
+
+        if (Test-Path $installDir) {
+          Remove-Item -Path $installDir -Recurse -Force
+        }
+        New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+
+        $args = @('/S', "/D=$installDir")
+        $proc = Start-Process -FilePath $installerPath -ArgumentList $args -Wait -PassThru
+        if ($proc.ExitCode -ne 0) {
+          throw "7-Zip-zstd installer exited with code $($proc.ExitCode)"
+        }
+
+        $found7za = Get-ChildItem -Path $installDir -Filter 7za.exe -Recurse -File | Select-Object -First 1
+        if (-not $found7za) {
+          throw '7za.exe not found after installing 7-Zip-zstd.'
+        }
+
+        Copy-Item -Path $found7za.FullName -Destination $target7za -Force
+        Write-Host "Prepared embedded 7za.exe from: $($found7za.FullName)"
+
+    - name: Build Release x64
+      shell: pwsh
+      run: |
+        msbuild .\MineBackup.sln /p:Configuration=Release /p:Platform=x64 /m
+
+    - name: Collect unsigned executable
+      shell: pwsh
+      run: |
+        $candidates = @(
+          '.\x64\Release\MineBackup.exe',
+          '.\MineBackup\x64\Release\MineBackup.exe',
+          '.\Release\MineBackup.exe'
+        )
+
+        $exePath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $exePath) {
+          $found = Get-ChildItem -Path . -Filter MineBackup.exe -Recurse -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($found) {
+            $exePath = $found.FullName
+          }
+        }
+
+        if (-not $exePath) {
+          throw 'MineBackup.exe not found after build.'
+        }
+
+        New-Item -ItemType Directory -Path .\out\unsigned -Force | Out-Null
+        Copy-Item -Path $exePath -Destination .\out\unsigned\MineBackup.exe -Force
+        Write-Host "Unsigned artifact: $exePath"
+
+    - name: Upload unsigned artifact
+      id: upload_unsigned
+      uses: actions/upload-artifact@v4
+      with:
+        name: minebackup-unsigned-windows
+        path: .\out\unsigned\MineBackup.exe
+
+    - name: Submit SignPath signing request
+      id: signpath
+      uses: signpath/github-action-submit-signing-request@v2
+      with:
+        api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+        organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+        project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+        signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+        github-artifact-id: ${{ steps.upload_unsigned.outputs.artifact-id }}
+        wait-for-completion: true
+        output-artifact-directory: .\out\signed
+
+    - name: Collect signed executable
+      shell: pwsh
+      run: |
+        $signedCandidates = @(
+          '.\out\signed\MineBackup.exe',
+          '.\out\signed\x64\Release\MineBackup.exe'
+        )
+
+        $signedExe = $signedCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $signedExe) {
+          $found = Get-ChildItem -Path .\out\signed -Filter MineBackup.exe -Recurse -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($found) {
+            $signedExe = $found.FullName
+          }
+        }
+
+        if (-not $signedExe) {
+          throw 'Signed MineBackup.exe not found in SignPath output.'
+        }
+
+        New-Item -ItemType Directory -Path .\out\release -Force | Out-Null
+        Copy-Item -Path $signedExe -Destination .\out\release\MineBackup.exe -Force
+        Write-Host "Signed artifact: $signedExe"
+
+    - name: Print SignPath links
+      shell: pwsh
+      run: |
+        Write-Host "Signing Policy Slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}"
+        Write-Host "Signing Request ID: ${{ steps.signpath.outputs.signing-request-id }}"
+        Write-Host "Signing Request URL: ${{ steps.signpath.outputs.signing-request-web-url }}"
+        Write-Host "Signed Download URL: ${{ steps.signpath.outputs.signed-artifact-download-url }}"
+
+    - name: Get latest release
+      id: get_release
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const releases = await github.rest.repos.listReleases({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            per_page: 1,
+          });
+          if (!releases.data.length) throw 'No releases found';
+          const release = releases.data[0];
+          core.setOutput('upload_url', release.upload_url);
+          core.setOutput('release_id', release.id);
+
+    - name: Delete existing asset if exists
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const releaseId = Number('${{ steps.get_release.outputs.release_id }}');
+          const assetName = 'MineBackup-windows-x64.exe';
+          const assets = await github.rest.repos.listReleaseAssets({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            release_id: releaseId,
+            per_page: 100,
+          });
+          const target = assets.data.find(a => a.name === assetName);
+          if (target) {
+            await github.rest.repos.deleteReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              asset_id: target.id,
+            });
+            core.info(`Deleted existing asset: ${assetName}`);
+          } else {
+            core.info(`No existing asset found: ${assetName}`);
+          }
+
+    - name: Upload signed artifact to latest release
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.get_release.outputs.upload_url }}
+        asset_path: .\out\release\MineBackup.exe
+        asset_name: MineBackup-windows-x64.exe
+        asset_content_type: application/octet-stream

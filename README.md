@@ -95,7 +95,7 @@ cd MineBackup
 
 ---
 
-## Code signing policy - Note: until 2026.5.6, it is still under review - not productive yet
+## Sponsor
 
 <table>
   <tr>
