@@ -70,10 +70,9 @@ jobs:
     - name: Collect unsigned executable
       shell: pwsh
       run: |
+        Start-Sleep -Seconds 3
         $candidates = @(
-          '.\x64\Release\MineBackup.exe',
-          '.\MineBackup\x64\Release\MineBackup.exe',
-          '.\Release\MineBackup.exe'
+          '.\x64\Release\MineBackup.exe'
         )
 
         $exePath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
